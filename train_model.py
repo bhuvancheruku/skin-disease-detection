@@ -1,65 +1,74 @@
-import cv2
-import numpy as np
 import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, classification_report
 import joblib
-from image_processing import preprocess_image, extract_features  # Import functions from image_processing.py
+from imblearn.over_sampling import SMOTE # type: ignore
+import sys 
+sys.path.append(r"C:\Users\thiru\OneDrive\Desktop\myproject\skin_disease_detection")
+from image_processing import process_image_data  # type: ignore # Ensure process_image_data handles images without multiprocessing
 
-# Path to dataset
-NORMAL_DIR = "path/to/normal_images"
-ABNORMAL_DIR = "path/to/abnormal_images"
+# Paths to dataset and image folders
+DATASET_PATH = r"C:\Users\thiru\OneDrive\Desktop\myproject\dataset"
+IMAGE_PATH_1 = os.path.join(DATASET_PATH, "HAM10000_images_part_1")
+IMAGE_PATH_2 = os.path.join(DATASET_PATH, "HAM10000_images_part_2")
+METADATA_FILE = os.path.join(DATASET_PATH, "HAM10000_metadata.csv")
 
-def load_images_from_folder(folder):
-    images = []
-    for filename in os.listdir(folder):
-        img = cv2.imread(os.path.join(folder, filename))
-        if img is not None:
-            images.append(img)
-    return images
+print("Loading metadata...")
+# Load metadata
+metadata = pd.read_csv(METADATA_FILE)
+disease_labels = metadata['dx'].unique()
+class_to_label = {name: idx for idx, name in enumerate(disease_labels)}
+label_to_class = {v: k for k, v in class_to_label.items()}
+metadata['label'] = metadata['dx'].map(class_to_label)
+print(f"Metadata loaded. Found {len(metadata)} entries.")
 
-# Load dataset
-normal_images = load_images_from_folder(NORMAL_DIR)
-abnormal_images = load_images_from_folder(ABNORMAL_DIR)
+print("Processing images and extracting features...")
+# Process images and extract features
+X, y = process_image_data(metadata, [IMAGE_PATH_1, IMAGE_PATH_2])
+print(f"Feature extraction complete. Extracted {X.shape[0]} samples with {X.shape[1]} features each.")
 
-# Prepare data and labels
-X = []
-y = []
+print("Handling class imbalance with SMOTE...")
+# Handle class imbalance using SMOTE
+smote = SMOTE(sampling_strategy='auto', random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+print(f"Class imbalance handled. Dataset now has {X_resampled.shape[0]} samples.")
 
-# Label 0 for normal and 1 for abnormal
-for img in normal_images:
-    processed_img = preprocess_image(img)
-    features = extract_features(processed_img)
-    X.append(features)
-    y.append(0)
-
-for img in abnormal_images:
-    processed_img = preprocess_image(img)
-    features = extract_features(processed_img)
-    X.append(features)
-    y.append(1)
-
-# Convert to numpy arrays
-X = np.array(X)
-y = np.array(y)
-
+print("Splitting dataset into training and testing sets...")
 # Split dataset into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
+print(f"Data split complete. Training set has {X_train.shape[0]} samples, and testing set has {X_test.shape[0]} samples.")
 
-# Create an SVM model pipeline
-model = make_pipeline(StandardScaler(), SVC(kernel='linear', probability=True))
+print("Setting up the SVM model pipeline...")
+# Define the SVM model with a pipeline (StandardScaler + SVC)
+model = make_pipeline(StandardScaler(), SVC(kernel='linear', probability=True, class_weight='balanced'))
 
-# Train the model
-model.fit(X_train, y_train)
+print("Performing hyperparameter tuning with GridSearchCV...")
+# Hyperparameter tuning using GridSearchCV without multiprocessing
+param_grid = {
+    'svc__C': [0.1, 1, 10, 100],  # Regularization parameter
+    'svc__kernel': ['linear', 'rbf'],  # Try different kernel types
+}
+grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy', n_jobs=1, verbose=3)  # n_jobs=1 disables parallelism
+grid_search.fit(X_train, y_train)
+print("Grid search complete.")
 
+# Best model after hyperparameter tuning
+best_model = grid_search.best_estimator_
+print(f"Best parameters found: {grid_search.best_params_}")
+
+print("Evaluating the model on the test set...")
 # Evaluate the model
-y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print("Model accuracy:", accuracy)
+y_pred = best_model.predict(X_test)
+print("Model Accuracy:", accuracy_score(y_test, y_pred))
+print("\nClassification Report:\n", classification_report(y_test, y_pred, target_names=disease_labels))
 
-# Save the model
-joblib.dump(model, "skin_disease_model.joblib")
-print("Model saved as skin_disease_model.joblib")
+# Save the trained model and label mapping
+print("Saving the trained model and label mapping...")
+joblib.dump(best_model, "skin_disease_model.joblib")
+joblib.dump(label_to_class, "label_mapping.joblib")
+print("Model and label mapping saved successfully.")
