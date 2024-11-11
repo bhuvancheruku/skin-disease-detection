@@ -1,74 +1,60 @@
 import os
-import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import EarlyStopping
 import joblib
-from imblearn.over_sampling import SMOTE # type: ignore
-import sys 
-sys.path.append(r"C:\Users\thiru\OneDrive\Desktop\myproject\skin_disease_detection")
-from image_processing import process_image_data  # type: ignore # Ensure process_image_data handles images without multiprocessing
+from image_processing import load_data
 
 # Paths to dataset and image folders
-DATASET_PATH = r"C:\Users\thiru\OneDrive\Desktop\myproject\dataset"
-IMAGE_PATH_1 = os.path.join(DATASET_PATH, "HAM10000_images_part_1")
-IMAGE_PATH_2 = os.path.join(DATASET_PATH, "HAM10000_images_part_2")
-METADATA_FILE = os.path.join(DATASET_PATH, "HAM10000_metadata.csv")
+DATASET_PATH = r"D:\projectv2\dataset\HAM10000_metadata.csv"
+IMAGE_PATH_1 = r"D:\projectv2\dataset\HAM10000_images_part_1"
+IMAGE_PATH_2 = r"D:\projectv2\dataset\HAM10000_images_part_2"
 
-print("Loading metadata...")
-# Load metadata
-metadata = pd.read_csv(METADATA_FILE)
-disease_labels = metadata['dx'].unique()
-class_to_label = {name: idx for idx, name in enumerate(disease_labels)}
-label_to_class = {v: k for k, v in class_to_label.items()}
-metadata['label'] = metadata['dx'].map(class_to_label)
-print(f"Metadata loaded. Found {len(metadata)} entries.")
+# Load data
+print("Loading data...")
+X, y, label_to_class = load_data(DATASET_PATH, [IMAGE_PATH_1, IMAGE_PATH_2])
+print(f"Data loaded. Number of samples: {len(X)}")
 
-print("Processing images and extracting features...")
-# Process images and extract features
-X, y = process_image_data(metadata, [IMAGE_PATH_1, IMAGE_PATH_2])
-print(f"Feature extraction complete. Extracted {X.shape[0]} samples with {X.shape[1]} features each.")
+# Train-test split
+print("Splitting data into training and test sets...")
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+y_train = to_categorical(y_train)
+y_test = to_categorical(y_test)
+print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
 
-print("Handling class imbalance with SMOTE...")
-# Handle class imbalance using SMOTE
-smote = SMOTE(sampling_strategy='auto', random_state=42)
-X_resampled, y_resampled = smote.fit_resample(X, y)
-print(f"Class imbalance handled. Dataset now has {X_resampled.shape[0]} samples.")
+# Define the CNN model
+print("Defining the CNN model...")
+model = Sequential([
+    Conv2D(32, (3, 3), activation='relu', input_shape=(128, 128, 3)),
+    MaxPooling2D((2, 2)),
+    Conv2D(64, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Conv2D(128, (3, 3), activation='relu'),
+    MaxPooling2D((2, 2)),
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.5),
+    Dense(len(label_to_class), activation='softmax')
+])
 
-print("Splitting dataset into training and testing sets...")
-# Split dataset into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
-print(f"Data split complete. Training set has {X_train.shape[0]} samples, and testing set has {X_test.shape[0]} samples.")
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+print("Model compiled successfully.")
 
-print("Setting up the SVM model pipeline...")
-# Define the SVM model with a pipeline (StandardScaler + SVC)
-model = make_pipeline(StandardScaler(), SVC(kernel='linear', probability=True, class_weight='balanced'))
+# Train the model
+print("Training the model...")
+early_stopping = EarlyStopping(patience=5, restore_best_weights=True)
+history = model.fit(X_train, y_train, epochs=20, validation_split=0.2, batch_size=32, verbose=2, callbacks=[early_stopping])
 
-print("Performing hyperparameter tuning with GridSearchCV...")
-# Hyperparameter tuning using GridSearchCV without multiprocessing
-param_grid = {
-    'svc__C': [0.1, 1, 10, 100],  # Regularization parameter
-    'svc__kernel': ['linear', 'rbf'],  # Try different kernel types
-}
-grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy', n_jobs=1, verbose=3)  # n_jobs=1 disables parallelism
-grid_search.fit(X_train, y_train)
-print("Grid search complete.")
-
-# Best model after hyperparameter tuning
-best_model = grid_search.best_estimator_
-print(f"Best parameters found: {grid_search.best_params_}")
-
-print("Evaluating the model on the test set...")
 # Evaluate the model
-y_pred = best_model.predict(X_test)
-print("Model Accuracy:", accuracy_score(y_test, y_pred))
-print("\nClassification Report:\n", classification_report(y_test, y_pred, target_names=disease_labels))
+print("Evaluating the model on the test set...")
+test_loss, test_acc = model.evaluate(X_test, y_test)
+print(f"Test Accuracy: {test_acc:.4f}, Test Loss: {test_loss:.4f}")
 
-# Save the trained model and label mapping
-print("Saving the trained model and label mapping...")
-joblib.dump(best_model, "skin_disease_model.joblib")
+# Save the model and label mapping
+print("Saving the model and label mapping...")
+model.save("skin_disease_cnn_model.h5")
 joblib.dump(label_to_class, "label_mapping.joblib")
-print("Model and label mapping saved successfully.")
+print("Model and label mapping saved.")
